@@ -19,14 +19,15 @@ class Decoder(nn.Module):
         self.layers = get_clones(DecoderLayer(d_model, heads, dropout), N)
         self.norm = Norm(d_model)
         self.out=nn.Linear(d_model,vocab_size)
-    def forward(self, trg, e_outputs, trg_mask,caption_lengths):
+    def forward(self, trg, e_outputs, e2_outputs, trg_mask,caption_lengths):
         caption_lengths, sort_ind=caption_lengths.squeeze(1).sort(dim=0, descending=True)
         trg=trg[sort_ind]
         e_outputs=e_outputs[sort_ind]
+        e2_outputs=e2_outputs[sort_ind]
         x = self.embed(trg)
         x = self.pe(x)
         for i in range(self.N):
-            x = self.layers[i](x, e_outputs, trg_mask)
+            x = self.layers[i](x, e_outputs, e2_outputs, trg_mask)
         y = self.norm(x)
         return self.out(y), trg ,caption_lengths, sort_ind
 
@@ -36,17 +37,19 @@ class DecoderLayer(nn.Module):
         self.norm_1 = Norm(d_model)
         self.norm_2 = Norm(d_model)
         self.norm_3 = Norm(d_model)
-        
+        self.norm_4 = Norm(d_model)
         self.dropout_1 = nn.Dropout(dropout)
         self.dropout_2 = nn.Dropout(dropout)
         self.dropout_3 = nn.Dropout(dropout)
+        self.dropout_4 = nn.Dropout(dropout)
         
         self.attn_1 = MultiHeadAttention(heads, d_model, dropout=dropout)
         self.attn_2 = MultiHeadAttention(heads, d_model, dropout=dropout)
+        self.attn_3 = MultiHeadAttention(heads, d_model, dropout=dropout)
         self.ff = FeedForward(d_model, dropout=dropout)
 
     # Used for forward traversal from the decoder and the encoders final output
-    def forward(self, x, e_outputs, trg_mask):
+    def forward(self, x, e_outputs, e2_outputs, trg_mask):
         # Input is (batch, seq length)
         # Output is (batch, seq length, d_model)
         x2 = self.norm_1(x)
@@ -54,5 +57,7 @@ class DecoderLayer(nn.Module):
         x2 = self.norm_2(x)
         x = x + self.dropout_2(self.attn_2(x2, e_outputs, e_outputs))
         x2 = self.norm_3(x)
-        x = x + self.dropout_3(self.ff(x2))
+        x = x + self.dropout_3(self.attn_3(x2, e2_outputs, e2_outputs))
+        x2 = self.norm_4(x)
+        x = x + self.dropout_4(self.ff(x2))
         return x

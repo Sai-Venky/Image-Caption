@@ -13,7 +13,7 @@ from PIL import Image
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=3):
+def caption_image_beam_search(encoder, decoder, image_path, word_map, adv_word_map, beam_size=3):
     """
     Reads an image and captions it with beam search.
 
@@ -46,6 +46,8 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
     image = image.unsqueeze(0)  # (1, 3, 256, 256)
     encoder_out = encoder(image)  # (1, enc_image_size, enc_image_size, encoder_dim)
     enc_image_size = encoder_out.size(1)
+    encoder_out = encoder_out.view(1, 14, 14, 512)
+
     encoder_dim = encoder_out.size(3)
 
     # Flatten encoding
@@ -65,35 +67,29 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
     top_k_scores = torch.zeros(k, 1).to(device)  # (k, 1)
 
     # Tensor to store top k sequences' alphas; now they're just 1s
-    seqs_alpha = torch.ones(k, 1, enc_image_size, enc_image_size).to(device)  # (k, 1, enc_image_size, enc_image_size)
 
     # Lists to store completed sequences, their alphas and scores
     complete_seqs = list()
-    complete_seqs_alpha = list()
     complete_seqs_scores = list()
 
     # Start decoding
     step = 1
-    h, c = decoder.init_hidden_state(encoder_out)
+    # h, c = decoder.init_hidden_state(encoder_out)
 
     # s is a number less than or equal to k, because sequences are removed from this process once they hit <end>
     while True:
 
-        embeddings = decoder.embedding(k_prev_words).squeeze(1)  # (s, embed_dim)
-
-        awe, alpha = decoder.attention(encoder_out, h)  # (s, encoder_dim), (s, num_pixels)
-
-        alpha = alpha.view(-1, enc_image_size, enc_image_size)  # (s, enc_image_size, enc_image_size)
-
-        gate = decoder.sigmoid(decoder.f_beta(h))  # gating scalar, (s, encoder_dim)
-        awe = gate * awe
-
-        h, c = decoder.decode_step(torch.cat([embeddings, awe], dim=1), (h, c))  # (s, decoder_dim)
-
-        scores = decoder.fc(h)  # (s, vocab_size)
-        scores = F.log_softmax(scores, dim=1)
+        embeddings = decoder.embed(k_prev_words)  # (s, embed_dim)
+        embeddings =  decoder.pe(embeddings)
+        for i in range(6):
+            embeddings = decoder.layers[i](embeddings, encoder_out, trg_mask = None)
+        y = decoder.norm(embeddings)
+        results = decoder.out(y)
+        scores=results.squeeze(1)
+        
 
         # Add
+        scores = scores.float()
         scores = top_k_scores.expand_as(scores) + scores  # (s, vocab_size)
 
         # For the first step, all k points will have the same scores (since same k previous words, h, c)
@@ -106,11 +102,8 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
         # Convert unrolled indices to actual indices of scores
         prev_word_inds = top_k_words / vocab_size  # (s)
         next_word_inds = top_k_words % vocab_size  # (s)
-
         # Add new words to sequences, alphas
         seqs = torch.cat([seqs[prev_word_inds], next_word_inds.unsqueeze(1)], dim=1)  # (s, step+1)
-        seqs_alpha = torch.cat([seqs_alpha[prev_word_inds], alpha[prev_word_inds].unsqueeze(1)],
-                               dim=1)  # (s, step+1, enc_image_size, enc_image_size)
 
         # Which sequences are incomplete (didn't reach <end>)?
         incomplete_inds = [ind for ind, next_word in enumerate(next_word_inds) if
@@ -118,9 +111,8 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
         complete_inds = list(set(range(len(next_word_inds))) - set(incomplete_inds))
 
         # Set aside complete sequences
-        if len(complete_inds) > 0:
+        if len(complete_inds) > 0 or step==50:
             complete_seqs.extend(seqs[complete_inds].tolist())
-            complete_seqs_alpha.extend(seqs_alpha[complete_inds].tolist())
             complete_seqs_scores.extend(top_k_scores[complete_inds])
         k -= len(complete_inds)  # reduce beam length accordingly
 
@@ -128,9 +120,6 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
         if k == 0:
             break
         seqs = seqs[incomplete_inds]
-        seqs_alpha = seqs_alpha[incomplete_inds]
-        h = h[prev_word_inds[incomplete_inds]]
-        c = c[prev_word_inds[incomplete_inds]]
         encoder_out = encoder_out[prev_word_inds[incomplete_inds]]
         top_k_scores = top_k_scores[incomplete_inds].unsqueeze(1)
         k_prev_words = next_word_inds[incomplete_inds].unsqueeze(1)
@@ -142,9 +131,7 @@ def caption_image_beam_search(encoder, decoder, image_path, word_map, beam_size=
 
     i = complete_seqs_scores.index(max(complete_seqs_scores))
     seq = complete_seqs[i]
-    alphas = complete_seqs_alpha[i]
-
-    return seq, alphas
+    return seq
 
 
 def visualize_att(image_path, seq, alphas, rev_word_map, smooth=True):
@@ -188,16 +175,18 @@ def visualize_att(image_path, seq, alphas, rev_word_map, smooth=True):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Show, Attend, and Tell - Tutorial - Generate Caption')
 
-    parser.add_argument('--img', '-i', help='path to image')
-    parser.add_argument('--model', '-m', help='path to model')
-    parser.add_argument('--word_map', '-wm', help='path to word map JSON')
+    # parser.add_argument('--img', '-i', help='path to image')
+    # parser.add_argument('--model', '-m', help='path to model')
+    # parser.add_argument('--word_map', '-wm', help='path to word map JSON')
     parser.add_argument('--beam_size', '-b', default=5, type=int, help='beam size for beam search')
     parser.add_argument('--dont_smooth', dest='smooth', action='store_false', help='do not smooth alpha overlay')
 
-    args = parser.parse_args()
+    args = Map()
+    args['beam_size']=5
+    args['dont_smooth']=True
 
     # Load model
-    checkpoint = torch.load(args.model)
+    checkpoint = torch.load('BEST_checkpoint__GLOSYS_transformer.pth.tar')
     decoder = checkpoint['decoder']
     decoder = decoder.to(device)
     decoder.eval()
@@ -206,13 +195,12 @@ if __name__ == '__main__':
     encoder.eval()
 
     # Load word map (word2ix)
-    with open(args.word_map, 'r') as j:
+    with open('WORDMAP_GLOSYS.json', 'r') as j:
         word_map = json.load(j)
     rev_word_map = {v: k for k, v in word_map.items()}  # ix2word
 
     # Encode, decode with attention and beam search
-    seq, alphas = caption_image_beam_search(encoder, decoder, args.img, word_map, args.beam_size)
-    alphas = torch.FloatTensor(alphas)
+    seq = caption_image_beam_search(encoder, decoder, 'woman.jpg', word_map, args.beam_size)
 
     # Visualize caption and attention of best sequence
-    visualize_att(args.img, seq, alphas, rev_word_map, args.smooth)
+    ##visualize_att(args.img, seq, alphas, rev_word_map,word_map, args.smooth)

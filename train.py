@@ -61,7 +61,7 @@ def create_masks(trg):
     return trg_mask
 
 
-def main():
+def main():    
     """
     Training and validation.
     """
@@ -74,6 +74,8 @@ def main():
         word_map = json.load(j)
 
     # Initialize / load checkpoint
+    
+    ####checkpoint comment ####
     if checkpoint is None:
 
         decoder = Decoder(d_model=decoder_dim, vocab_size=len(word_map), dropout=dropout,)
@@ -107,13 +109,15 @@ def main():
     # Custom dataloaders
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                      std=[0.229, 0.224, 0.225])
+
+    print("Starting Training..")
     train_loader = torch.utils.data.DataLoader(
         CaptionDataset(data_folder, data_name, 'TRAIN', transform=transforms.Compose([normalize])),
         batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
     val_loader = torch.utils.data.DataLoader(
         CaptionDataset(data_folder, data_name, 'VAL', transform=transforms.Compose([normalize])),
         batch_size=batch_size, shuffle=True, num_workers=workers, pin_memory=True)
-
+    print("Training Complete..")
     # Epochs
     for epoch in range(start_epoch, epochs):
 
@@ -188,16 +192,19 @@ def train(train_loader, encoder, decoder, criterion, encoder_optimizer, decoder_
         trg_mask = create_masks(caps)
 
         # Forward prop.
-        imgs = encoder(imgs)
-        scores, caps_sorted, decode_lengths, sort_ind = decoder(caps, imgs, trg_mask,caplens)
+        resnet_imgs, vgg_imgs = encoder(imgs)
+        scores, caps_sorted, decode_lengths, sort_ind = decoder(caps, resnet_imgs, vgg_imgs, trg_mask,caplens)
 
         # Since we decoded starting with <start>, the targets are all words after <start>, up to <end>
         targets = caps_sorted[:, 1:]
 
         # Remove timesteps that we didn't decode at, or are pads
         # pack_padded_sequence is an easy trick to do this
-        scores, _ = pack_padded_sequence(scores, decode_lengths, batch_first=True)
-        targets, _ = pack_padded_sequence(targets, decode_lengths, batch_first=True)
+        # print("the score are shape",scores.shape ,decode_lengths.shape)
+        scoresTemp = pack_padded_sequence(scores, decode_lengths, batch_first=True)
+        scores=scoresTemp.data
+        targetsTemp = pack_padded_sequence(targets, decode_lengths, batch_first=True)
+        targets=targetsTemp.data
 
         # Calculate loss
         loss = criterion(scores, targets)
@@ -277,17 +284,20 @@ def validate(val_loader, encoder, decoder, criterion):
             trg_mask = create_masks(caps)
             # Forward prop.
             if encoder is not None:
-                imgs = encoder(imgs)
-            scores, caps_sorted, decode_lengths, sort_ind = decoder(caps, imgs, trg_mask,caplens)
+                resnet_imgs, vgg_imgs = encoder(imgs)
+            scores, caps_sorted, decode_lengths, sort_ind = decoder(caps, resnet_imgs, vgg_imgs, trg_mask,caplens)
 
             # Since we decoded starting with <start>, the targets are all words after <start>, up to <end>
             targets = caps_sorted[:, 1:]
 
+            
             # Remove timesteps that we didn't decode at, or are pads
             # pack_padded_sequence is an easy trick to do this
             scores_copy = scores.clone()
-            scores, _ = pack_padded_sequence(scores, decode_lengths, batch_first=True)
-            targets, _ = pack_padded_sequence(targets, decode_lengths, batch_first=True)
+            scoresTemp = pack_padded_sequence(scores, decode_lengths, batch_first=True)
+            scores=scoresTemp.data
+            targetsTemp = pack_padded_sequence(targets, decode_lengths, batch_first=True)
+            targets=targetsTemp.data
 
             # Calculate loss
             loss = criterion(scores, targets)
@@ -335,16 +345,21 @@ def validate(val_loader, encoder, decoder, criterion):
             assert len(references) == len(hypotheses)
 
         # Calculate BLEU-4 scores
+        chencherry = SmoothingFunction()
+        bleu1 = corpus_bleu(references, hypotheses ,weights=(1.0/1.0,),smoothing_function=chencherry.method4)
+        bleu2 = corpus_bleu(references, hypotheses ,weights=(1.0/2.0, 1.0/2.0,),smoothing_function=chencherry.method4)
+        bleu3 = corpus_bleu(references, hypotheses ,weights=(1.0/3.0, 1.0/3.0, 1.0/3.0,),smoothing_function=chencherry.method4)
         bleu4 = corpus_bleu(references, hypotheses)
 
         print(
-            '\n * LOSS - {loss.avg:.3f}, TOP-5 ACCURACY - {top5.avg:.3f}, BLEU-4 - {bleu}\n'.format(
+            '\n * LOSS - {loss.avg:.3f}, TOP-5 ACCURACY - {top5.avg:.3f}, BLEU-1 - {bleu_1} BLEU-2 - {bleu_2} BLEU-3 - {bleu_3} BLEU-4 - {bleu_4}\n'.format(
                 loss=losses,
                 top5=top5accs,
-                bleu=bleu4))
-
+                bleu_1=bleu1,
+                bleu_2=bleu2,
+                bleu_3=bleu3,
+                bleu_4=bleu4))
     return bleu4
-
 
 if __name__ == '__main__':
     main()

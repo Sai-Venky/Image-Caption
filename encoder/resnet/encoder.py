@@ -1,6 +1,10 @@
 
 from torch import nn
+import torchvision##### encoder #######
+
+from torch import nn
 import torchvision
+import torch
 class Encoder(nn.Module):
     """
     Encoder.
@@ -21,6 +25,11 @@ class Encoder(nn.Module):
         # Resize image to fixed size to allow input images of variable size
         self.adaptive_pool = nn.AdaptiveAvgPool2d((encoded_image_size, encoded_image_size))
 
+        ####
+        vgg=torchvision.models.vgg16(pretrained=True)
+        modules_vgg=list(vgg.features.children())[:-1]
+        self.vgg=nn.Sequential(*modules_vgg)
+        ####
         
     def forward(self, images):
         """
@@ -29,10 +38,21 @@ class Encoder(nn.Module):
         :param images: images, a tensor of dimensions (batch_size, 3, image_size, image_size)
         :return: encoded images
         """
-        out = self.resnet(images)  # (batch_size, 2048, image_size/32, image_size/32)
-        out = self.adaptive_pool(out)  # (batch_size, 2048, encoded_image_size, encoded_image_size)
-        out = out.permute(0, 2, 3, 1)  # (batch_size, encoded_image_size, encoded_image_size, 2048)
-        batch_size=out.size(0)
-        out = out.view(batch_size, -1, 2048)
-        out = self.encoder_trans(out)
-        return out
+        with torch.no_grad():
+            out = self.resnet(images)  # (batch_size, 2048, image_size/32, image_size/32)
+            out = self.adaptive_pool(out)  # (batch_size, 2048, encoded_image_size, encoded_image_size)
+            out = out.permute(0, 2, 3, 1)  # (batch_size, encoded_image_size, encoded_image_size, 2048)
+            batch_size=out.size(0)
+            out = out.view(batch_size, -1, 2048)
+            out = self.encoder_trans(out)
+            #print(out.size())
+            
+            
+            #### VGG ####
+            out_vgg=self.vgg(images)
+            out_vgg = self.adaptive_pool(out_vgg)
+            out_vgg=out_vgg.permute(0,2,3,1)
+            batch_size=out_vgg.size(0)
+            out_vgg=out_vgg.view(batch_size,-1,512)
+
+        return out,out_vgg
